@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <title>Teachable Machine to micro:bit</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 20px; }
+    #webcam-container { margin: 20px auto; }
+    .status { font-size: 1.2rem; font-weight: bold; margin: 10px; color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h2>🤖 AI 鏡頭追蹤控制 micro:bit</h2>
+  
+  <div>
+    <input type="text" id="model-url" placeholder="貼上 Teachable Machine 模型 URL (需以 / 結尾)" style="width: 400px; padding: 8px;">
+    <button onclick="initAI()" style="padding: 8px 16px;">1. 載入模型 & 鏡頭</button>
+    <button onclick="connectSerial()" style="padding: 8px 16px; background-color: #10b981; color: white;">2. 連接 micro:bit</button>
+  </div>
+
+  <div id="webcam-container"></div>
+  <div class="status" id="label-status">等待模型載入...</div>
+
+  <script>
+    let model, webcam, maxPredictions;
+    let port, writer;
+    let lastSentLabel = "";
+
+    // 1. 載入 Teachable Machine 模型
+    async function initAI() {
+      const URL = document.getElementById("model-url").value;
+      if (!URL) return alert("請輸入有效的模型網址！");
+      
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+
+      document.getElementById("label-status").innerText = "正在載入模型...";
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      // 設定鏡頭 (寬 320, 高 240, 水平翻轉方便學生對位)
+      webcam = new tmImage.Webcam(320, 240, true);
+      await webcam.setup();
+      await webcam.play();
+      window.requestAnimationFrame(loop);
+
+      document.getElementById("webcam-container").innerHTML = "";
+      document.getElementById("webcam-container").appendChild(webcam.canvas);
+      document.getElementById("label-status").innerText = "模型載入成功！請連接 micro:bit";
+    }
+
+    async function loop() {
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    // 2. 預測並透過 Serial 發送 Label
+    async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+      let highestProb = 0;
+      let bestLabel = "";
+
+      for (let i = 0; i < maxPredictions; i++) {
+        if (prediction[i].probability > highestProb) {
+          highestProb = prediction[i].probability;
+          bestLabel = prediction[i].className;
+        }
+      }
+
+      // 信心度超過 75% 才發送，且避免重複連續發送相同指令以防 Serial 塞車
+      if (highestProb > 0.75 && bestLabel !== lastSentLabel) {
+        lastSentLabel = bestLabel;
+        document.getElementById("label-status").innerText = `當前辨識: ${bestLabel} (${Math.round(highestProb * 100)}%)`;
+        sendToMicrobit(bestLabel);
+      }
+    }
+
+    // 3. Web Serial API 連接 micro:bit
+    async function connectSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        const textEncoder = new TextEncoderStream();
+        textEncoder.readable.pipeTo(port.writable);
+        writer = textEncoder.writable.getWriter();
+        alert("micro:bit 連接成功！");
+      } catch (err) {
+        console.error(err);
+        alert("連接失敗或瀏覽器不支援 Web Serial (請使用 Chrome / Edge)。");
+      }
+    }
+
+    // 發送字串至 micro:bit (字尾加換行符號 \n 方便 micro:bit 讀取)
+    async function sendToMicrobit(text) {
+      if (writer) {
+        await writer.write(text + "\n");
+      }
+    }
+  </script>
+</body>
+</html>
